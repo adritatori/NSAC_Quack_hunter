@@ -1,2 +1,4 @@
 vega-datasets
 streamlit
+obspy
+PyWavelets
