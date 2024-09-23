@@ -1,3 +1,4 @@
+import json
 import altair as alt
 import pandas as pd
 import streamlit as st
@@ -16,6 +17,23 @@ from data_processing import load_data, combined_ste_rms_reduction
 from event_detection import detect_events
 from visualization import plot_results
 from utils import check_empty_data
+
+
+def generate_metadata(mseed_directory):
+    metadata = []
+    for file in os.listdir(mseed_directory):
+        if file.endswith('.mseed'):
+            st = read(os.path.join(mseed_directory, file))
+            metadata.append({
+                'filename': file,
+                'start_time': str(st[0].stats.starttime),
+                'end_time': str(st[0].stats.endtime),
+                'sampling_rate': st[0].stats.sampling_rate,
+                'num_samples': st[0].stats.npts
+            })
+    with open('metadata.json', 'w') as f:
+        json.dump(metadata, f)
+
 
 
 def calculate_snr(data, sampling_rate, freq_bands=None, time_windows=None):
@@ -96,7 +114,10 @@ def plot_time_frequency_analysis(data, sampling_rate):
 
 # Streamlit app
 def main():
-    st.set_page_config(page_title="Seismic Data Analyzer", page_icon="🌋", layout="wide")
+    with open('metadata.json', 'r') as f:
+        metadata = json.load(f)
+
+    st.set_page_config(page_title="Quack Hunter", page_icon="🌋", layout="wide")
     
     # Custom CSS to make the app more attractive
     st.markdown("""
@@ -138,7 +159,7 @@ def main():
 
     # File selection
     file_list = [f for f in os.listdir(data_dir) if f.endswith('.mseed')]
-    selected_file = st.selectbox("Select a seismic data file:", file_list)
+    selected_file = st.selectbox("Select a file to view:", [m['filename'] for m in metadata])
 
     if selected_file:
         file_path = os.path.join(data_dir, selected_file)
