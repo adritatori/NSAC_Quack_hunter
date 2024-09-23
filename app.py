@@ -1,70 +1,34 @@
-import json
-import altair as alt
-import pandas as pd
 import streamlit as st
-import os
+import pandas as pd
 import numpy as np
-from obspy.signal.trigger import classic_sta_lta, trigger_onset
 import matplotlib.pyplot as plt
+import json
+import os
 from obspy import read
-from scipy import signal, stats
-from scipy.signal import find_peaks
+from scipy import signal
 import pywt
-from pywt import cwt
-from scipy.spatial.distance import cdist
-from sklearn.metrics import precision_recall_fscore_support
+import base64
+from io import BytesIO
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from data_processing import load_data, combined_ste_rms_reduction
-from event_detection import detect_events
+from event_detection import detect_events, ensemble_detection, sliding_window_detection
 from visualization import plot_results
 from utils import check_empty_data
 
-
-def generate_metadata(mseed_directory):
-    metadata = []
-    for file in os.listdir(mseed_directory):
-        if file.endswith('.mseed'):
-            st = read(os.path.join(mseed_directory, file))
-            metadata.append({
-                'filename': file,
-                'start_time': str(st[0].stats.starttime),
-                'end_time': str(st[0].stats.endtime),
-                'sampling_rate': st[0].stats.sampling_rate,
-                'num_samples': st[0].stats.npts
-            })
-    with open('metadata.json', 'w') as f:
-        json.dump(metadata, f)
+# Load metadata
+@st.cache_data
+def load_metadata(metadata_file):
+    with open(metadata_file, 'r') as f:
+        return json.load(f)
 
 
-
-def calculate_snr(data, sampling_rate, freq_bands=None, time_windows=None):
+def calculate_snr(data, sampling_rate):
     freqs, psd = signal.welch(data, sampling_rate)
     signal_power = np.sum(psd)
     noise_power = signal_power - np.max(psd)
-    snr_overall = 10 * np.log10(signal_power / noise_power)
-    
-    results = {"Overall SNR": f"{snr_overall:.2f} dB"}
-    
-    if freq_bands:
-        for f_min, f_max in freq_bands:
-            band_mask = (freqs >= f_min) & (freqs <= f_max)
-            if np.any(band_mask):
-                signal_power_band = np.sum(psd[band_mask])
-                noise_power_band = signal_power_band - np.max(psd[band_mask])
-                snr_band = 10 * np.log10(signal_power_band / noise_power_band)
-                results[f"SNR in band {f_min}-{f_max} Hz"] = f"{snr_band:.2f} dB"
-    
-    if time_windows:
-        time = np.arange(len(data)) / sampling_rate
-        for t_min, t_max in time_windows:
-            window_mask = (time >= t_min) & (time <= t_max)
-            if np.any(window_mask):
-                _, psd_window = signal.welch(data[window_mask], sampling_rate)
-                signal_power_window = np.sum(psd_window)
-                noise_power_window = signal_power_window - np.max(psd_window)
-                snr_window = 10 * np.log10(signal_power_window / noise_power_window)
-                results[f"SNR in time window {t_min}-{t_max} s"] = f"{snr_window:.2f} dB"
-    
-    return results
+    snr = 10 * np.log10(signal_power / noise_power) if noise_power > 0 else float('inf')
+    return snr
 
 def create_seismic_plot(raw_time, raw_data, processed_time, processed_data, detections):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
@@ -86,6 +50,23 @@ def create_seismic_plot(raw_time, raw_data, processed_time, processed_data, dete
     ax2.legend()
     
     plt.tight_layout()
+    return fig
+def create_interactive_seismic_plot(raw_time, raw_data, processed_time, processed_data, detections):
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1,
+                        subplot_titles=("Raw Seismic Data", "Processed Seismic Data with Detections"))
+    
+    fig.add_trace(go.Scatter(x=raw_time, y=raw_data, mode='lines', name='Raw Data'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=processed_time, y=processed_data, mode='lines', name='Processed Data'), row=2, col=1)
+    
+    for start, end in detections:
+        fig.add_vrect(x0=processed_time[start], x1=processed_time[end],
+                      fillcolor="red", opacity=0.2, layer="below", line_width=0, row=2, col=1)
+    
+    fig.update_layout(height=800, title_text="Seismic Data Analysis")
+    fig.update_xaxes(title_text="Time (s)", row=2, col=1)
+    fig.update_yaxes(title_text="Amplitude", row=1, col=1)
+    fig.update_yaxes(title_text="Amplitude", row=2, col=1)
+    
     return fig
 
 def plot_frequency_analysis(data, sampling_rate):
@@ -112,141 +93,169 @@ def plot_time_frequency_analysis(data, sampling_rate):
     fig.colorbar(im, ax=ax, label='Magnitude')
     return fig
 
-# Streamlit app
 def main():
-    with open('metadata.json', 'r') as f:
-        metadata = json.load(f)
-
-    st.set_page_config(page_title="Quack Hunter", page_icon="🌋", layout="wide")
+    st.set_page_config(page_title="Seismic Data Analyzer", page_icon="🌋", layout="wide")
     
-    # Custom CSS to make the app more attractive
+    # Custom CSS
     st.markdown("""
     <style>
-    .stApp {
-        background-color: #f0f2f6;
-    }
-    .main .block-container {
-        padding-top: 2rem;
-    }
-    h1 {
-        color: #1e3a8a;
-    }
-    h2 {
-        color: #2563eb;
-    }
-    p,h3, div{
-          color: #1e3a8a;      }      
-                      
-    .stSelectbox label, .stSlider label {
-        color: #1e3a8a;
-        font-weight: bold;
-    }
+    .stApp {background-color: #f0f2f6;}
+    .main .block-container {padding-top: 2rem;}
+    h1, h2, h3, p, div {color: #1e3a8a;}
+    .stSelectbox label, .stSlider label {color: #1e3a8a; font-weight: bold;}
     </style>
     """, unsafe_allow_html=True)
 
     st.title("🌋 Seismic Data Analyzer")
 
-    # Sidebar for controls
-    st.sidebar.header("Settings")
-    data_dir = st.sidebar.text_input("Data Directory", "data/lunar/training/data/S12_GradeA")
-    
-    # Parameters
+    # Load metadata
+    metadata = load_metadata('metadata.json')
+    df_metadata = pd.DataFrame(metadata)
+
+    # Sidebar for dataset overview and filtering
+    st.sidebar.header("Dataset Overview")
+    st.sidebar.write(f"Total files: {len(df_metadata)}")
+    st.sidebar.write(f"Total duration: {df_metadata['num_samples'].sum() / df_metadata['sampling_rate'].mean():.2f} seconds")
+    st.sidebar.write(f"Total data size: {df_metadata['file_size'].sum():.2f} MB")
+
+    # Filters
+    st.sidebar.header("Filters")
+    selected_station = st.sidebar.selectbox("Select Station", ['All'] + list(df_metadata['station'].unique()))
+    if selected_station != 'All':
+        df_metadata = df_metadata[df_metadata['station'] == selected_station]
+     
+    # Sidebar for processing parameters
+    st.sidebar.header("Processing Parameters")
     ste_frame_size = st.sidebar.slider("STE Frame Size", 100, 2000, 1000)
     ste_hop_size = st.sidebar.slider("STE Hop Size", 100, 1000, 500)
     ste_threshold = st.sidebar.slider("STE Threshold", 0.1, 1.0, 0.5)
     rms_window_size = st.sidebar.slider("RMS Window Size", 10, 500, 100)
     global_rms_threshold = st.sidebar.slider("Global RMS Threshold", 0.1, 2.0, 0.8)
+    segment_threshold_factor = st.sidebar.slider("Segment Threshold Factor", 0.5, 2.0, 1.7)
 
-    # File selection
-    file_list = [f for f in os.listdir(data_dir) if f.endswith('.mseed')]
-    selected_file = st.selectbox("Select a file to view:", [m['filename'] for m in metadata])
+
+    # Sidebar for detection parameters
+    st.sidebar.header("Detection Parameters")
+    detection_method = st.sidebar.selectbox("Detection Method", ["STA/LTA", "Sliding Window", "Ensemble"])
+
+    if detection_method == "STA/LTA":
+        sta_len = st.sidebar.slider("STA Length (seconds)", 1, 10, 5)
+        lta_len = st.sidebar.slider("LTA Length (seconds)", 10, 100, 50)
+        thr_on = st.sidebar.slider("Trigger On Threshold", 1.0, 5.0, 3.0)
+        thr_off = st.sidebar.slider("Trigger Off Threshold", 0.5, 2.0, 1.0)
+        min_dur = st.sidebar.slider("Minimum Duration (seconds)", 0.5, 5.0, 2.0)
+    elif detection_method == "Sliding Window":
+        window_size = st.sidebar.slider("Window Size", 500, 2000, 1500)
+        factor = st.sidebar.slider("Factor", 1.0, 5.0, 2.0)
+        min_change = st.sidebar.slider("Minimum Change", 0.01, 0.2, 0.07)
+
+
+
+    # Main content
+    st.header("File Selection")
+    selected_file = st.selectbox("Select a file to analyze:", df_metadata['filename'])
 
     if selected_file:
-        file_path = os.path.join(data_dir, selected_file)
+        file_metadata = df_metadata[df_metadata['filename'] == selected_file].iloc[0]
         
-        # Load and process data
-        raw_data, sampling_rate, start_time = load_data(file_path)
-        raw_time = np.arange(len(raw_data)) / sampling_rate
-
-        # Process data
-        final_mask, ste_segments, rms_values = combined_ste_rms_reduction(
-            raw_data, sampling_rate, ste_frame_size, ste_hop_size, ste_threshold,
-            rms_window_size, global_rms_threshold, segment_threshold_factor=1.7
-        )
-
-        processed_data = raw_data[final_mask]
-        processed_time = raw_time[final_mask]
-
-        # Detect events
-        warm_up_samples = int(30 * sampling_rate)
-        detections = detect_events(processed_data[warm_up_samples:], sampling_rate)
-        detections = [(start + warm_up_samples, end + warm_up_samples) for start, end in detections]
-
-        # Create Matplotlib figure
-        fig = create_seismic_plot(raw_time, raw_data, processed_time, processed_data, detections)
-
-        # Display the plot
-        st.pyplot(fig)
-
-        # Add interactivity with Streamlit
-        st.header("🔍 Interactive Data Exploration")
-        start_time = st.slider("Start Time (s)", min_value=0.0, max_value=raw_time[-1], value=0.0, step=1.0)
-        duration = st.slider("Duration (s)", min_value=1.0, max_value=60.0, value=10.0, step=1.0)
-        
-        # Update plot based on selected time range
-        mask = (raw_time >= start_time) & (raw_time < start_time + duration)
-        fig_zoomed = create_seismic_plot(
-            raw_time[mask], raw_data[mask],
-            processed_time[(processed_time >= start_time) & (processed_time < start_time + duration)],
-            processed_data[(processed_time >= start_time) & (processed_time < start_time + duration)],
-            [(start, end) for start, end in detections if start_time <= processed_time[start] < start_time + duration]
-        )
-        st.pyplot(fig_zoomed)
-
-        # Display statistics
-        st.header("📊 Analysis Results")
+        # Display file metadata
+        st.subheader("File Metadata")
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Data Reduction", f"{100 * (1 - len(processed_data) / len(raw_data)):.2f}%")
+            st.write(f"Start Time: {file_metadata['start_time']}")
+            st.write(f"Sampling Rate: {file_metadata['sampling_rate']} Hz")
+            st.write(f"Channel: {file_metadata['channel']}")
         with col2:
-            st.metric("Detected Events", len(detections))
+            st.write(f"End Time: {file_metadata['end_time']}")
+            st.write(f"Number of Samples: {file_metadata['num_samples']}")
+            st.write(f"Station: {file_metadata['station']}")
         with col3:
-            st.metric("Duration", f"{raw_time[-1]:.2f} s")
+            st.write(f"Duration: {file_metadata['num_samples'] / file_metadata['sampling_rate']:.2f} s")
+            st.write(f"File Size: {file_metadata['file_size']:.2f} MB")
+            st.write(f"Network: {file_metadata['network']}")
 
-        # SNR Analysis
-        st.subheader("Signal-to-Noise Ratio (SNR) Analysis")
-        snr_raw = calculate_snr(raw_data, sampling_rate)
-        snr_processed = calculate_snr(processed_data, sampling_rate)
-        
+        # Display thumbnail
+        st.image(BytesIO(base64.b64decode(file_metadata['thumbnail'])), caption="Signal Overview")
+
+        # Display pre-computed metrics
+        st.subheader("Signal Metrics")
         col1, col2 = st.columns(2)
         with col1:
-            st.write("Raw Data SNR:")
-            for key, value in snr_raw.items():
-                st.write(f"{key}: {value}")
+            st.write("Statistics:")
+            for key, value in file_metadata['statistics'].items():
+                st.write(f"{key.capitalize()}: {value:.2f}")
         with col2:
-            st.write("Processed Data SNR:")
-            for key, value in snr_processed.items():
-                st.write(f"{key}: {value}")
+            st.write("Spectral Information:")
+            for key, value in file_metadata['spectral_info'].items():
+                st.write(f"{key.replace('_', ' ').capitalize()}: {value:.2f}")
 
-        # Frequency Analysis
-        st.subheader("Frequency Analysis")
-        freq_fig = plot_frequency_analysis(processed_data, sampling_rate)
-        st.pyplot(freq_fig)
+        st.write("Quality Metrics:")
+        st.write(f"SNR: {file_metadata['quality_metrics']['snr']:.2f} dB")
+        st.write(f"Data Completeness: {file_metadata['quality_metrics']['data_completeness']:.2%}")
+        
+        # Option to load full data for detailed analysis
+        if st.button("Perform Detailed Analysis"):
+            file_path = os.path.join(file_metadata['directory'], file_metadata['relative_path'])
+            raw_data, sampling_rate, _ = load_data(file_path)
+            raw_time = np.arange(len(raw_data)) / sampling_rate
 
-        # Time-Frequency Analysis
-        st.subheader("Time-Frequency Analysis")
-        tf_fig = plot_time_frequency_analysis(processed_data, sampling_rate)
-        st.pyplot(tf_fig)
+            # Calculate SNR before processing
+            snr_before = calculate_snr(raw_data,sampling_rate)
 
-        # Event details
-        if detections:
-            st.subheader("🔍 Detected Events")
-            event_df = pd.DataFrame({
-                'Start Time (s)': [processed_time[start] for start, _ in detections],
-                'End Time (s)': [processed_time[end] for _, end in detections],
-                'Duration (s)': [processed_time[end] - processed_time[start] for start, end in detections]
-            })
-            st.dataframe(event_df)
+            # Process data
+            final_mask, _, _ = combined_ste_rms_reduction(
+                raw_data, sampling_rate, ste_frame_size, ste_hop_size, ste_threshold,
+                rms_window_size, global_rms_threshold, segment_threshold_factor
+            )
+            processed_data = raw_data[final_mask]
+            processed_time = raw_time[final_mask]
+
+            # Calculate SNR after processing
+            snr_after = calculate_snr(processed_data,sampling_rate)
+
+            # Detect events based on selected method
+            if detection_method == "STA/LTA":
+                detections = detect_events(processed_data, sampling_rate, sta_len, lta_len, thr_on, thr_off, min_dur)
+            elif detection_method == "Sliding Window":
+                detections = sliding_window_detection(processed_data, window_size, factor, min_change)
+            else:  # Ensemble
+                detections = ensemble_detection(processed_data, sampling_rate)
+
+            # Display analytics
+            st.subheader("📊 Analysis Results")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("SNR Before", f"{snr_before:.2f} dB")
+            with col2:
+                st.metric("SNR After", f"{snr_after:.2f} dB")
+            with col3:
+                st.metric("Detected Events", len(detections))
+            with col4:
+                data_reduction = (1 - len(processed_data) / len(raw_data)) * 100
+                st.metric("Data Reduction", f"{data_reduction:.2f}%")
+
+            # Create and display interactive plot
+            fig = create_interactive_seismic_plot(raw_time, raw_data, processed_time, processed_data, detections)
+            st.plotly_chart(fig, use_container_width=True)  
+            # Frequency Analysis
+            st.subheader("Frequency Analysis")
+            freq_fig = plot_frequency_analysis(processed_data, sampling_rate)
+            st.pyplot(freq_fig)
+
+            # Time-Frequency Analysis
+            st.subheader("Time-Frequency Analysis")
+            tf_fig = plot_time_frequency_analysis(processed_data, sampling_rate)
+            st.pyplot(tf_fig)
+           
+            # Event details
+            if detections:
+                st.subheader("🔍 Detected Events")
+                event_df = pd.DataFrame({
+                    'Start Time (s)': [processed_time[start] for start, _ in detections],
+                    'End Time (s)': [processed_time[end] for _, end in detections],
+                    'Duration (s)': [processed_time[end] - processed_time[start] for start, end in detections]
+                })
+                st.dataframe(event_df)
 
 if __name__ == "__main__":
     main()

@@ -8,3 +8,4 @@ altair
 scikit-learn
 panda
 numpy
+plotly
