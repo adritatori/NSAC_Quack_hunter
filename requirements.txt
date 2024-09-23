@@ -2,3 +2,9 @@ vega-datasets
 streamlit
 obspy
 PyWavelets
+vega-datasets
+obspy
+altair
+scikit-learn
+panda
+numpy
