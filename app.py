@@ -49,18 +49,16 @@ def main():
     st.markdown("""
     <style>
     .stApp {
-        background-image: url('https://i.ibb.co.com/svz0WsV/quack-hunter.jpg');
+        background-image: url('https://images.unsplash.com/photo-1530508777238-14544088c3ed?q=80&w=1374&auto=format&fit=crop&ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D');
         background-attachment: fixed;
         background-size: cover;
     }
     .main .block-container {
-        background-color: rgba(240, 242, 246, 0.85);
+        background-color: rgba(32, 33, 33, 0.85);
         padding: 2rem;
         border-radius: 10px;
     }
-    h1, h2, h3 {color: #8B0000;}
-    p, div {color: #1e3a8a;}
-    .stSelectbox label, .stSlider label {color: #8B0000; font-weight: bold;}
+    .stSelectbox label, .stSlider label {font-weight: bold;}
     </style>
     """, unsafe_allow_html=True)
 

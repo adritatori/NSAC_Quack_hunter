@@ -1,0 +1,20 @@
+[theme]
+primaryColor = "#8A2BE2"  # Bright purple, like a distant galaxy
+backgroundColor = "#0E1117"  # Dark background, like deep space
+secondaryBackgroundColor = "#1A1F2C"  # Slightly lighter, for contrast
+textColor = "#E0E0E0"  # Light grey text for readability
+font = "sans serif"
+
+# Custom theme options
+[theme.chart]
+backgroundColor = "#161A25"  # Dark background for charts
+gridColor = "#2C3E50"  # Subdued grid lines
+
+[theme.chart.line]
+color = "#00BFFF"  # Bright blue for time series lines
+
+[theme.chart.point]
+color = "#FFD700"  # Gold for data points, like stars
+
+[theme.chart.axis]
+color = "#718096"  # Muted color for axis labels
