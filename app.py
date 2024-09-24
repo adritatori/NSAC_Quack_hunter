@@ -245,7 +245,7 @@ def main():
             # race_3d_fig = create_3d_seismic_trace(processed_data, sampling_rate)
             # st.plotly_chart(trace_3d_fig, use_container_width=True)
             st.subheader("3D Seismic Trace Visualization")
-            fig = create_3d_seismic_trace(processed_data, sampling_rate, detections)
+            fig = create_3d_seismic_trace(processed_data[::10], sampling_rate, detections)
             st.plotly_chart(fig, use_container_width=True)
             # Frequency Analysis
             # st.subheader("Frequency Analysis")
