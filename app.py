@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from data_processing import load_data, combined_ste_rms_reduction
 from event_detection import detect_events, ensemble_detection, sliding_window_detection
-from visualization import plot_results
+from visualization import  create_3d_seismic_trace, create_interactive_spectrogram, plot_results
 from utils import check_empty_data
 
 # Load metadata
@@ -136,14 +136,14 @@ def main():
 
     # Sidebar for detection parameters
     st.sidebar.header("Detection Parameters")
-    detection_method = st.sidebar.selectbox("Detection Method", ["STA/LTA", "Sliding Window", "Ensemble"])
+    detection_method = st.sidebar.selectbox("Detection Method", ["STA/LTA"])
 
     if detection_method == "STA/LTA":
-        sta_len = st.sidebar.slider("STA Length (seconds)", 1, 10, 5)
-        lta_len = st.sidebar.slider("LTA Length (seconds)", 10, 100, 50)
+        sta_len = st.sidebar.slider("STA Length (seconds)", 1, 1000, 5)
+        lta_len = st.sidebar.slider("LTA Length (seconds)", 10, 1000, 50)
         thr_on = st.sidebar.slider("Trigger On Threshold", 1.0, 5.0, 3.0)
         thr_off = st.sidebar.slider("Trigger Off Threshold", 0.5, 2.0, 1.0)
-        min_dur = st.sidebar.slider("Minimum Duration (seconds)", 0.5, 5.0, 2.0)
+        min_dur = st.sidebar.slider("Minimum Duration (seconds)", 0.5, 3.0, 10.0)
     elif detection_method == "Sliding Window":
         window_size = st.sidebar.slider("Window Size", 500, 2000, 1500)
         factor = st.sidebar.slider("Factor", 1.0, 5.0, 2.0)
@@ -237,10 +237,20 @@ def main():
             # Create and display interactive plot
             fig = create_interactive_seismic_plot(raw_time, raw_data, processed_time, processed_data, detections)
             st.plotly_chart(fig, use_container_width=True)  
+
+            st.subheader("Interactive Spectrogram")
+            spectrogram_fig = create_interactive_spectrogram(processed_data, sampling_rate)
+            st.plotly_chart(spectrogram_fig, use_container_width=True)
+
+            # race_3d_fig = create_3d_seismic_trace(processed_data, sampling_rate)
+            # st.plotly_chart(trace_3d_fig, use_container_width=True)
+            st.subheader("3D Seismic Trace Visualization")
+            fig = create_3d_seismic_trace(processed_data, sampling_rate, detections)
+            st.plotly_chart(fig, use_container_width=True)
             # Frequency Analysis
-            st.subheader("Frequency Analysis")
-            freq_fig = plot_frequency_analysis(processed_data, sampling_rate)
-            st.pyplot(freq_fig)
+            # st.subheader("Frequency Analysis")
+            # freq_fig = plot_frequency_analysis(processed_data, sampling_rate)
+            # st.pyplot(freq_fig)
 
             # Time-Frequency Analysis
             st.subheader("Time-Frequency Analysis")
