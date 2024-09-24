@@ -49,7 +49,7 @@ def main():
     st.markdown("""
     <style>
     .stApp {
-        background-image: url('https://images-assets.nasa.gov/image/GSFC_20171208_Archive_e000393/GSFC_20171208_Archive_e000393~orig.jpg?w=1800&h=1685&fit=clip&crop=faces%2Cfocalpoint');
+        background-image: url('https://i.ibb.co.com/svz0WsV/quack-hunter.jpg');
         background-attachment: fixed;
         background-size: cover;
     }
