@@ -218,6 +218,17 @@ def create_3d_seismic_trace(data, sampling_rate, detections, num_traces=50, down
     
     fig = go.Figure()
     
+    # Add spectrogram as a surface at the bottom of the 3D plot
+    spectrogram_z = np.log10(Sxx + 1e-10)  # Add small value to avoid log(0)
+    fig.add_trace(go.Surface(
+        x=t,
+        y=f,
+        z=spectrogram_z,
+        colorscale='Viridis',
+        showscale=False,
+        opacity=0.8
+    ))
+    
     for i in range(num_traces):
         start = i * len(downsampled_data) // num_traces
         end = (i + 1) * len(downsampled_data) // num_traces
@@ -227,7 +238,7 @@ def create_3d_seismic_trace(data, sampling_rate, detections, num_traces=50, down
         fig.add_trace(go.Scatter3d(
             x=time[start:end],
             y=np.full_like(time[start:end], i),
-            z=downsampled_data[start:end],
+            z=downsampled_data[start:end] + i*0.1,  # Add offset for better visibility
             mode='lines',
             line=dict(color=colors, width=2),
             opacity=0.6
@@ -238,7 +249,8 @@ def create_3d_seismic_trace(data, sampling_rate, detections, num_traces=50, down
         fig.add_trace(go.Scatter3d(
             x=[time[start//downsample_factor], time[end//downsample_factor]],
             y=[num_traces/2, num_traces/2],
-            z=[downsampled_data[start//downsample_factor], downsampled_data[end//downsample_factor]],
+            z=[downsampled_data[start//downsample_factor] + num_traces*0.05, 
+               downsampled_data[end//downsample_factor] + num_traces*0.05],
             mode='markers',
             marker=dict(size=5, color='red', symbol='diamond'),
             name='Detected Event'
@@ -252,7 +264,7 @@ def create_3d_seismic_trace(data, sampling_rate, detections, num_traces=50, down
                 go.Scatter3d(
                     x=time[:end//downsample_factor],
                     y=np.full_like(time[:end//downsample_factor], i),
-                    z=downsampled_data[:end//downsample_factor],
+                    z=downsampled_data[:end//downsample_factor] + i*0.1,
                     mode='lines',
                     line=dict(color=plt.cm.viridis(norm_freq[:end//downsample_factor]), width=2),
                     opacity=0.6
@@ -261,7 +273,8 @@ def create_3d_seismic_trace(data, sampling_rate, detections, num_traces=50, down
                 go.Scatter3d(
                     x=[time[start//downsample_factor], time[end//downsample_factor]],
                     y=[num_traces/2, num_traces/2],
-                    z=[downsampled_data[start//downsample_factor], downsampled_data[end//downsample_factor]],
+                    z=[downsampled_data[start//downsample_factor] + num_traces*0.05, 
+                       downsampled_data[end//downsample_factor] + num_traces*0.05],
                     mode='markers',
                     marker=dict(size=5, color='red', symbol='diamond'),
                     name='Detected Event'
@@ -274,11 +287,11 @@ def create_3d_seismic_trace(data, sampling_rate, detections, num_traces=50, down
     fig.frames = frames
     
     fig.update_layout(
-        title='3D Seismic Trace Visualization with Detected Events (Downsampled)',
+        title='3D Seismic Trace Visualization with Spectrogram and Detected Events',
         scene=dict(
             xaxis_title='Time [s]',
-            yaxis_title='Trace Number',
-            zaxis_title='Amplitude',
+            yaxis_title='Frequency [Hz]',
+            zaxis_title='Amplitude / Log Power',
             aspectmode='manual',
             aspectratio=dict(x=2, y=1, z=0.5),
             camera=dict(eye=dict(x=1.5, y=-1.5, z=0.5))

@@ -236,11 +236,11 @@ def main():
                         display_audio(processed_audio, "Processed Seismic Data")
 
                 st.subheader("3D Seismic Trace Visualization")
-                fig_3d = create_3d_seismic_trace(processed_data, sampling_rate, detections, downsample_factor=10)
+                fig_3d = create_3d_seismic_trace(processed_data, sampling_rate, detections, downsample_factor=20)
                 st.plotly_chart(fig_3d, use_container_width=True)
 
                 st.subheader("Time-Frequency Analysis")
-                tf_fig = plot_time_frequency_analysis(processed_data, sampling_rate, downsample_factor=1)
+                tf_fig = plot_time_frequency_analysis(processed_data, sampling_rate, downsample_factor=5)
                 st.pyplot(tf_fig)
             
            
