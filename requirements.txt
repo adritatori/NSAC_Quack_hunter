@@ -9,3 +9,5 @@ scikit-learn
 panda
 numpy
 plotly
+librosa
+soundfile
