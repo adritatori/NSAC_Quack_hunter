@@ -18,16 +18,10 @@ import librosa
 import soundfile as sf
 
 def calculate_snr(data, sampling_rate):
-    if len(data) == 0:
-        return float('-inf')
-
-    signal_power = np.mean(data**2)
-    noise_power = np.var(data)
-
-    if noise_power == 0:
-        return float('inf')
-
-    snr = 10 * np.log10(signal_power / noise_power)
+    freqs, psd = signal.welch(data, sampling_rate)
+    signal_power = np.sum(psd)
+    noise_power = signal_power - np.max(psd)
+    snr = 10 * np.log10(signal_power / noise_power) if noise_power > 0 else float('inf')
     return snr
 
 def display_audio(audio_buffer, label):

@@ -117,7 +117,7 @@ def create_interactive_seismic_plot(raw_time, raw_data, processed_time, processe
         height=800,
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
     )
-    
+  
     return fig
 
 def create_3d_seismic_trace(data, sampling_rate, detections, num_traces=50, downsample_factor=10):
@@ -305,7 +305,7 @@ def create_interactive_seismic_plot(raw_time, raw_data, processed_time, processe
             arrowsize=1,
             arrowwidth=2,
             arrowcolor=color_map[event_type],
-            font=dict(size=10),
+            font=dict(color="black",size=12),
             bgcolor="white",
             opacity=0.8
         )
