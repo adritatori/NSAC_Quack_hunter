@@ -18,12 +18,6 @@ from utils import check_empty_data
 import librosa
 import soundfile as sf
 
-# Load metadata
-@st.cache_data
-def load_metadata(metadata_file):
-    with open(metadata_file, 'r') as f:
-        return json.load(f)
-
 def calculate_snr(data, sampling_rate):
     freqs, psd = signal.welch(data, sampling_rate)
     signal_power = np.sum(psd)
@@ -42,6 +36,7 @@ def display_audio(audio_buffer, label):
         )
     else:
         st.error(f"Failed to create {label} audio file.")
+
 def main():
     st.set_page_config(page_title="Quack Hunter", page_icon="🌋", layout="wide")
     
@@ -64,25 +59,8 @@ def main():
 
     st.title("🌋 Quack Finder")
 
-    # Load metadata
-    metadata = load_metadata('metadata.json')
-    df_metadata = pd.DataFrame(metadata)
-
-    # Sidebar for dataset overview and filtering
+    # Sidebar for processing parameters
     with st.sidebar:
-        st.header("Dataset Overview")
-        st.write(f"Total files: {len(df_metadata)}")
-        st.write(f"Total duration: {df_metadata['num_samples'].sum() / df_metadata['sampling_rate'].mean():.2f} seconds")
-        st.write(f"Total data size: {df_metadata['file_size'].sum():.2f} MB")
-
-        # Filters
-        st.header("Filters")
-        selected_station = st.selectbox("Select Station", ['All'] + list(df_metadata['station'].unique()))
-
-        if selected_station != 'All':
-            df_metadata = df_metadata[df_metadata['station'] == selected_station]
-     
-        # Processing parameters
         st.header("Processing Parameters")
         ste_frame_size = st.slider("STE Frame Size", 100, 2000, 1000)
         ste_hop_size = st.slider("STE Hop Size", 100, 1000, 500)
@@ -106,54 +84,38 @@ def main():
             factor = st.slider("Factor", 1.0, 5.0, 2.0)
             min_change = st.slider("Minimum Change", 0.01, 0.2, 0.07)
 
-    # Main content
-    st.header("File Selection")
-    selected_file = st.selectbox("Select a file to analyze:", df_metadata['filename'])
+    # File upload
+    st.header("File Upload")
+    uploaded_file = st.file_uploader("Upload your MAR/MOONS seismic data file", type=["mseed", "sac"])
 
-    if selected_file:
-        file_metadata = df_metadata[df_metadata['filename'] == selected_file].iloc[0]
-        
-        # Display file metadata
-        with st.expander("File Metadata"):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.write(f"Start Time: {file_metadata['start_time']}")
-                st.write(f"Sampling Rate: {file_metadata['sampling_rate']} Hz")
-                st.write(f"Channel: {file_metadata['channel']}")
-            with col2:
-                st.write(f"End Time: {file_metadata['end_time']}")
-                st.write(f"Number of Samples: {file_metadata['num_samples']}")
-                st.write(f"Station: {file_metadata['station']}")
-            with col3:
-                st.write(f"Duration: {file_metadata['num_samples'] / file_metadata['sampling_rate']:.2f} s")
-                st.write(f"File Size: {file_metadata['file_size']:.2f} MB")
-                st.write(f"Network: {file_metadata['network']}")
-
-        # Display thumbnail
-        st.image(BytesIO(base64.b64decode(file_metadata['thumbnail'])), caption="Signal Overview")
-
-        # Display pre-computed metrics
-        with st.expander("Signal Metrics"):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("Statistics:")
-                for key, value in file_metadata['statistics'].items():
-                    st.write(f"{key.capitalize()}: {value:.2f}")
-            with col2:
-                st.write("Spectral Information:")
-                for key, value in file_metadata['spectral_info'].items():
-                    st.write(f"{key.replace('_', ' ').capitalize()}: {value:.2f}")
-
-            st.write("Quality Metrics:")
-            st.write(f"SNR: {file_metadata['quality_metrics']['snr']:.2f} dB")
-            st.write(f"Data Completeness: {file_metadata['quality_metrics']['data_completeness']:.2%}")
-        
-        # Option to load full data for detailed analysis
-        if st.button("Perform Detailed Analysis"):
-            with st.spinner("Processing data..."):
-                file_path = os.path.join(file_metadata['directory'], file_metadata['relative_path'])
-                raw_data, sampling_rate, _ = load_data(file_path)
+    if uploaded_file is not None:
+        # Read the uploaded file
+        with st.spinner("Processing uploaded data..."):
+            try:
+                # Save the uploaded file temporarily
+                with open("temp_seismic_file", "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                
+                # Load the data using ObsPy
+                st_obj = read("temp_seismic_file")
+                raw_data = st_obj[0].data
+                sampling_rate = st_obj[0].stats.sampling_rate
                 raw_time = np.arange(len(raw_data)) / sampling_rate
+
+                # Display file metadata
+                with st.expander("File Metadata"):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.write(f"Start Time: {st_obj[0].stats.starttime}")
+                        st.write(f"Sampling Rate: {sampling_rate} Hz")
+                        st.write(f"Channel: {st_obj[0].stats.channel}")
+                    with col2:
+                        st.write(f"End Time: {st_obj[0].stats.endtime}")
+                        st.write(f"Number of Samples: {len(raw_data)}")
+                        st.write(f"Station: {st_obj[0].stats.station}")
+                    with col3:
+                        st.write(f"Duration: {len(raw_data) / sampling_rate:.2f} s")
+                        st.write(f"Network: {st_obj[0].stats.network}")
 
                 # Calculate SNR before processing
                 snr_before = calculate_snr(raw_data, sampling_rate)
@@ -177,82 +139,64 @@ def main():
                 else:  # Ensemble
                     detections = ensemble_detection(processed_data, sampling_rate)
 
-            # Display analytics
-            st.subheader("📊 Analysis Results")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("SNR Before", f"{snr_before:.2f} dB")
-            with col2:
-                st.metric("SNR After", f"{snr_after:.2f} dB")
-            with col3:
-                st.metric("Detected Events", len(detections))
-            with col4:
-                data_reduction = (1 - len(processed_data) / len(raw_data)) * 100
-                st.metric("Data Reduction", f"{data_reduction:.2f}%")
+                # Display analytics
+                st.subheader("📊 Analysis Results")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("SNR Before", f"{snr_before:.2f} dB")
+                with col2:
+                    st.metric("SNR After", f"{snr_after:.2f} dB")
+                with col3:
+                    st.metric("Detected Events", len(detections))
+                with col4:
+                    data_reduction = (1 - len(processed_data) / len(raw_data)) * 100
+                    st.metric("Data Reduction", f"{data_reduction:.2f}%")
 
-            # Interactive seismic plot
-            st.subheader("Interactive Seismic Plot")
-            fig = create_interactive_seismic_plot(raw_time, raw_data, processed_time, processed_data, detections, downsample_factor=10)
-            st.plotly_chart(fig, use_container_width=True)
+                # Interactive seismic plot
+                st.subheader("Interactive Seismic Plot")
+                fig = create_interactive_seismic_plot(raw_time, raw_data, processed_time, processed_data, detections, downsample_factor=10)
+                st.plotly_chart(fig, use_container_width=True)
 
-            # Audio comparison
-            
-
-            # 3D seismic trace visualization
-            
-            
-            # Time-Frequency Analysis
-            if(selected_station == 'S12'):
+                # Audio comparison
                 st.subheader("Seismic Audio Comparison")
-                raw_audio = create_audio_file(raw_data, sampling_rate, octave= 1)
-                processed_audio = create_audio_file(processed_data, sampling_rate, octave = 1)
+                raw_audio = create_audio_file(raw_data, sampling_rate, octave=4)
+                processed_audio = create_audio_file(processed_data, sampling_rate, octave=4)
 
                 if raw_audio is not None and processed_audio is not None:
                     st.subheader("Seismic Audio Representation")
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2 = st.columns(2)
                     with col1:
                         display_audio(raw_audio, "Raw Seismic Data")
                     with col2:
                         display_audio(processed_audio, "Processed Seismic Data")
 
-                st.subheader("3D Seismic Trace Visualization")
-                fig_3d = create_3d_seismic_trace(processed_data, sampling_rate, detections, downsample_factor=50)
-                st.plotly_chart(fig_3d, use_container_width=True)
-
-                st.subheader("Time-Frequency Analysis")
-                tf_fig = plot_time_frequency_analysis(processed_data, sampling_rate, downsample_factor=20)
-                st.pyplot(tf_fig)
-            else:
-                st.subheader("Seismic Audio Comparison")
-                raw_audio = create_audio_file(raw_data, sampling_rate, octave= 4)
-                processed_audio = create_audio_file(processed_data, sampling_rate, octave = 4)
-
-                if raw_audio is not None and processed_audio is not None:
-                    st.subheader("Seismic Audio Representation")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        display_audio(raw_audio, "Raw Seismic Data")
-                    with col2:
-                        display_audio(processed_audio, "Processed Seismic Data")
-
+                # 3D seismic trace visualization
                 st.subheader("3D Seismic Trace Visualization")
                 fig_3d = create_3d_seismic_trace(processed_data, sampling_rate, detections, downsample_factor=20)
                 st.plotly_chart(fig_3d, use_container_width=True)
 
+                # Time-Frequency Analysis
                 st.subheader("Time-Frequency Analysis")
                 tf_fig = plot_time_frequency_analysis(processed_data, sampling_rate, downsample_factor=5)
                 st.pyplot(tf_fig)
-            
-           
-            # Event details
-            if detections:
-                st.subheader("🔍 Detected Events")
-                event_df = pd.DataFrame({
-                    'Start Time (s)': [processed_time[start] for start, _ in detections],
-                    'End Time (s)': [processed_time[end] for _, end in detections],
-                    'Duration (s)': [processed_time[end] - processed_time[start] for start, end in detections]
-                })
-                st.dataframe(event_df)
+
+                # Event details
+                if detections:
+                    st.subheader("🔍 Detected Events")
+                    event_df = pd.DataFrame({
+                        'Start Time (s)': [processed_time[start] for start, _ in detections],
+                        'End Time (s)': [processed_time[end] for _, end in detections],
+                        'Duration (s)': [processed_time[end] - processed_time[start] for start, end in detections]
+                    })
+                    st.dataframe(event_df)
+
+            except Exception as e:
+                st.error(f"Error processing the file: {str(e)}")
+
+            finally:
+                # Clean up the temporary file
+                if os.path.exists("temp_seismic_file"):
+                    os.remove("temp_seismic_file")
 
 if __name__ == "__main__":
     main()
