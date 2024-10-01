@@ -10,19 +10,24 @@ import pywt
 import base64
 from io import BytesIO
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from data_processing import load_data, combined_ste_rms_reduction
-from event_detection import detect_events, ensemble_detection, sliding_window_detection
-from visualization import create_3d_seismic_trace, create_audio_file, create_interactive_seismic_plot, create_interactive_spectrogram, plot_time_frequency_analysis
+from data_processing import combined_ste_rms_reduction
+from event_detection import multi_scale_event_detection
+from visualization import create_3d_seismic_trace, create_audio_file, create_comprehensive_plot, create_interactive_seismic_plot
 from utils import check_empty_data
 import librosa
 import soundfile as sf
 
 def calculate_snr(data, sampling_rate):
-    freqs, psd = signal.welch(data, sampling_rate)
-    signal_power = np.sum(psd)
-    noise_power = signal_power - np.max(psd)
-    snr = 10 * np.log10(signal_power / noise_power) if noise_power > 0 else float('inf')
+    if len(data) == 0:
+        return float('-inf')
+
+    signal_power = np.mean(data**2)
+    noise_power = np.var(data)
+
+    if noise_power == 0:
+        return float('inf')
+
+    snr = 10 * np.log10(signal_power / noise_power)
     return snr
 
 def display_audio(audio_buffer, label):
@@ -64,25 +69,12 @@ def main():
         st.header("Processing Parameters")
         ste_frame_size = st.slider("STE Frame Size", 100, 2000, 1000)
         ste_hop_size = st.slider("STE Hop Size", 100, 1000, 500)
-        ste_threshold = st.slider("STE Threshold", 0.1, 1.0, 0.5)
-        rms_window_size = st.slider("RMS Window Size", 10, 500, 100)
-        global_rms_threshold = st.slider("Global RMS Threshold", 0.1, 2.0, 0.8)
-        segment_threshold_factor = st.slider("Segment Threshold Factor", 0.5, 2.0, 1.7)
-
-        # Detection parameters
-        st.header("Detection Parameters")
-        detection_method = st.selectbox("Detection Method", ["STA/LTA", "Sliding Window", "Ensemble"])
-
-        if detection_method == "STA/LTA":
-            sta_len = st.slider("STA Length (seconds)", 1, 1000, 5)
-            lta_len = st.slider("LTA Length (seconds)", 10, 1000, 50)
-            thr_on = st.slider("Trigger On Threshold", 1.0, 5.0, 3.0)
-            thr_off = st.slider("Trigger Off Threshold", 0.5, 2.0, 1.0)
-            min_dur = st.slider("Minimum Duration (seconds)", 0.5, 3.0, 10.0)
-        elif detection_method == "Sliding Window":
-            window_size = st.slider("Window Size", 500, 2000, 1500)
-            factor = st.slider("Factor", 1.0, 5.0, 2.0)
-            min_change = st.slider("Minimum Change", 0.01, 0.2, 0.07)
+        ste_threshold = st.slider("STE Threshold", 0.1, 1.0, 1.5)
+        rms_window_size = st.slider("RMS Window Size", 10, 500, 1000)
+        global_rms_threshold = st.slider("Global RMS Threshold", 0.1, 10.0, 0.8)
+        segment_threshold_factor = st.slider("Segment Threshold Factor", 0.5, 2.0, 1.1)
+        st.sidebar.header("STA/LTA Parameters")
+        num_detectors = st.sidebar.number_input("Number of STA/LTA detectors", min_value=1, max_value=5, value=1)
 
     # File upload
     st.header("File Upload")
@@ -131,13 +123,26 @@ def main():
                 # Calculate SNR after processing
                 snr_after = calculate_snr(processed_data, sampling_rate)
 
-                # Detect events based on selected method
-                if detection_method == "STA/LTA":
-                    detections = detect_events(processed_data, sampling_rate, sta_len, lta_len, thr_on, thr_off, min_dur)
-                elif detection_method == "Sliding Window":
-                    detections = sliding_window_detection(processed_data, window_size, factor, min_change)
-                else:  # Ensemble
-                    detections = ensemble_detection(processed_data, sampling_rate)
+                
+                detector_params = []
+                for i in range(num_detectors):
+                    st.sidebar.subheader(f"Detector {i+1}")
+                    sta = st.sidebar.slider(f"STA (seconds) - Detector {i+1}", 0.1, 10.0, 3.0, 0.1)
+                    lta = st.sidebar.slider(f"LTA (seconds) - Detector {i+1}", 10.0, 1000.0, 600.0, 10.0)
+                    thr_on = st.sidebar.slider(f"Trigger On Threshold - Detector {i+1}", 1.0, 5.0, 2.5, 0.1)
+                    thr_off = st.sidebar.slider(f"Trigger Off Threshold - Detector {i+1}", 0.5, 3.0, 1.8, 0.1)
+                    min_dur = st.sidebar.slider(f"Minimum Duration (seconds) - Detector {i+1}", 0.1, 5.0, 0.9, 0.1)
+                    
+                    detector_params.append({
+                        "sta": sta,
+                        "lta": lta,
+                        "thr_on": thr_on,
+                        "thr_off": thr_off,
+                        "min_dur": min_dur
+                    })
+
+                # Update your event detection call
+                detections = multi_scale_event_detection(processed_data, sampling_rate, detector_params)
 
                 # Display analytics
                 st.subheader("📊 Analysis Results")
@@ -151,7 +156,6 @@ def main():
                 with col4:
                     data_reduction = (1 - len(processed_data) / len(raw_data)) * 100
                     st.metric("Data Reduction", f"{data_reduction:.2f}%")
-
                 # Interactive seismic plot
                 st.subheader("Interactive Seismic Plot")
                 fig = create_interactive_seismic_plot(raw_time, raw_data, processed_time, processed_data, detections, downsample_factor=10)
@@ -170,25 +174,24 @@ def main():
                     with col2:
                         display_audio(processed_audio, "Processed Seismic Data")
 
+                # Comprehensive plot
+                st.subheader("Comprehensive Seismic Analysis")
+                comp_fig = create_comprehensive_plot(raw_data, processed_data, raw_time, processed_time, sampling_rate, detections, uploaded_file.name)
+                st.pyplot(comp_fig)
+
                 # 3D seismic trace visualization
                 st.subheader("3D Seismic Trace Visualization")
                 fig_3d = create_3d_seismic_trace(processed_data, sampling_rate, detections, downsample_factor=20)
                 st.plotly_chart(fig_3d, use_container_width=True)
 
-                # Time-Frequency Analysis
-                st.subheader("Time-Frequency Analysis")
-                tf_fig = plot_time_frequency_analysis(processed_data, sampling_rate, downsample_factor=5)
-                st.pyplot(tf_fig)
-
                 # Event details
                 if detections:
                     st.subheader("🔍 Detected Events")
-                    event_df = pd.DataFrame({
-                        'Start Time (s)': [processed_time[start] for start, _ in detections],
-                        'End Time (s)': [processed_time[end] for _, end in detections],
-                        'Duration (s)': [processed_time[end] - processed_time[start] for start, end in detections]
-                    })
-                    st.dataframe(event_df)
+                    event_df = pd.DataFrame(detections)
+                    event_df['Start Time (s)'] = event_df['start'] / sampling_rate
+                    event_df['End Time (s)'] = event_df['end'] / sampling_rate
+                    event_df['Duration (s)'] = event_df['End Time (s)'] - event_df['Start Time (s)']
+                    st.dataframe(event_df[['Start Time (s)', 'End Time (s)', 'Duration (s)', 'type', 'energy_ratio', 'max_cft', 'detector']])
 
             except Exception as e:
                 st.error(f"Error processing the file: {str(e)}")

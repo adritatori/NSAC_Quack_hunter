@@ -1,85 +1,89 @@
 import numpy as np
-from obspy.signal.trigger import classic_sta_lta, trigger_onset
+from obspy.signal.trigger import recursive_sta_lta
+import logging
 
-def detect_events(data, sampling_rate, sta_len=5, lta_len=50, thr_on=3.0, thr_off=1, min_dur=2.0):
-    sta_samples = int(sta_len * sampling_rate)
-    lta_samples = int(lta_len * sampling_rate)
-    cft = classic_sta_lta(data, sta_samples, lta_samples)
+logging.basicConfig(level=logging.INFO)
 
-    triggers = trigger_onset(cft, thr_on, thr_off)
+def detect_events(data, sampling_rate, params):
+    try:
+        sta_samples = int(params["sta"] * sampling_rate)
+        lta_samples = int(params["lta"] * sampling_rate)
 
-    refined_triggers = []
-    for start, end in triggers:
-        duration = (end - start) / sampling_rate
-        if duration >= min_dur:
-            event_amp = np.max(np.abs(data[start:end]))
-            background_amp = np.median(np.abs(data))
-            if event_amp > 3.0 * background_amp:
-                refined_triggers.append((start, end))
+        cft = recursive_sta_lta(data, sta_samples, lta_samples)
 
-    return refined_triggers
+        thr_on_adaptive = np.mean(cft) + params["thr_on"] * np.std(cft)
+        thr_off_adaptive = np.mean(cft) + params["thr_off"] * np.std(cft)
 
-def merge_triggers(triggers, min_samples):
-    if not triggers:
+        triggers = np.where((cft > thr_on_adaptive) & (np.roll(cft, 1) <= thr_on_adaptive))[0]
+        detriggers = np.where((cft < thr_off_adaptive) & (np.roll(cft, 1) >= thr_off_adaptive))[0]
+
+        events = []
+        for i, start in enumerate(triggers):
+            end_candidates = detriggers[detriggers > start]
+            if len(end_candidates) > 0:
+                end = end_candidates[0]
+                duration = (end - start) / sampling_rate
+                if duration >= params["min_dur"]:
+                    max_cft = np.max(cft[start:end])
+                    events.append((start, end, max_cft))
+
+        logging.info(f"Detected {len(events)} events with parameters: {params}")
+        return events
+    except Exception as e:
+        logging.error(f"Error in detect_events: {str(e)}")
         return []
 
-    merged = [triggers[0]]
-    for current in triggers[1:]:
-        if current[0] <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], current[1]))
-        elif current[0] - merged[-1][1] < min_samples:
-            merged[-1] = (merged[-1][0], current[1])
+def multi_scale_event_detection(data, sampling_rate, detector_params):
+    all_events = []
+    for params in detector_params:
+        events = detect_events(data, sampling_rate, params)
+        all_events.extend(events)
+
+    if not all_events:
+        logging.warning("No events detected. Using fallback method.")
+        # Fallback method: simple threshold-based detection
+        threshold = np.mean(data) + 2 * np.std(data)
+        above_threshold = np.where(data > threshold)[0]
+        events = np.split(above_threshold, np.where(np.diff(above_threshold) != 1)[0] + 1)
+        all_events = [(e[0], e[-1], np.max(data[e[0]:e[-1]])) for e in events if len(e) > sampling_rate * 0.5]
+
+    energy = np.square(data)
+    background_energy = np.median(energy)
+
+    classified_events = []
+    for start, end, max_cft in all_events:
+        event_energy = np.mean(energy[start:end])
+        energy_ratio = event_energy / background_energy
+
+        if energy_ratio > 5.0 and max_cft > 3.0:
+            event_type = "Large Event"
+        elif energy_ratio > 2.5 and max_cft > 2.0:
+            event_type = "Moderate Event"
+        elif energy_ratio > 1.5 and max_cft > 1.5:
+            event_type = "Small Event"
         else:
-            merged.append(current)
+            event_type = "Micro Event"
 
-    return [trigger for trigger in merged if trigger[1] - trigger[0] >= min_samples]
+        classified_events.append({
+            "start": start,
+            "end": end,
+            "type": event_type,
+            "energy_ratio": energy_ratio,
+            "max_cft": max_cft,
+            "detector": f"STA:{params['sta']},LTA:{params['lta']}"
+        })
 
-
-def sliding_window_detection(data, window_size, factor, min_change, feature_extraction='fft'):
-    """
-    Sliding window anomaly detection with optional feature extraction.
-
-    Args:
-        data: The input data.
-        window_size: The size of the sliding window.
-        factor: The factor for the local threshold.
-        min_change: The minimum change for a significant event.
-        feature_extraction: The type of feature extraction to use ('fft' or None).
-
-    Returns:
-        A list of detected events.
-    """
-
-    events = []
-
-    for i in range(len(data) - window_size):
-        window = data[i:i + window_size]
-
-        # Apply feature extraction if specified
-        if feature_extraction == 'fft':
-            features = np.abs(np.fft.fft(window))
+    # Sort events by start time and merge overlapping events
+    classified_events.sort(key=lambda x: x['start'])
+    merged_events = []
+    for event in classified_events:
+        if not merged_events or event['start'] > merged_events[-1]['end']:
+            merged_events.append(event)
         else:
-            features = window
+            # Merge overlapping events, keeping the "larger" classification
+            merged_events[-1]['end'] = max(merged_events[-1]['end'], event['end'])
+            merged_events[-1]['type'] = max(merged_events[-1]['type'], event['type'],
+                                            key=lambda x: ["Micro Event", "Small Event", "Moderate Event", "Large Event"].index(x))
 
-        # Calculate local standard deviation and threshold
-        local_std = np.std(features)
-        local_threshold = factor * local_std
-
-        # Calculate changes and identify significant changes
-        changes = np.abs(np.diff(features))
-        significant_changes = (changes > min_change) & (np.abs(features[1:]) > local_threshold)
-
-        # If significant changes found, append event
-        if np.any(significant_changes):
-            start = i + np.argmax(significant_changes)
-            end = i + window_size - 1 - np.argmax(significant_changes[::-1])
-            events.append((start, end))
-
-    return merge_triggers(events, window_size // 2)
-
-
-def ensemble_detection(data, sampling_rate):
-    detections2 = sliding_window_detection(data, window_size=1500, factor=2, min_change=0.07)
-
-    all_detections = detections2
-    return merge_triggers(all_detections, int(2.0 * sampling_rate))
+    logging.info(f"Final number of events after merging: {len(merged_events)}")
+    return merged_events
