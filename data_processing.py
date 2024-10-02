@@ -1,8 +1,6 @@
 import numpy as np
 from obspy import read
 from utils import calculate_rms
-
-
 def normalize_data(data):
     return (data - np.mean(data)) / np.std(data)
 def load_data(file_path):

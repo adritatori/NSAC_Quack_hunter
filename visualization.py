@@ -11,6 +11,19 @@ import base64
 from io import BytesIO
 import soundfile as sf
 from scipy.io import wavfile
+from scipy.stats import zscore
+
+def validate_data(data):
+    if len(data) == 0:
+        raise ValueError("Input data is empty")
+    return data
+
+# 2. Implement downsampling for large datasets
+def adaptive_downsample(data, max_points=100000):
+    if len(data) > max_points:
+        downsample_factor = len(data) // max_points
+        return data[::downsample_factor]
+    return data
 
 def downsample(data, factor):
     """Downsample the data by the given factor."""
@@ -66,16 +79,20 @@ def create_audio_player(data, sampling_rate, label):
 
 
 def create_interactive_seismic_plot(raw_time, raw_data, processed_time, processed_data, detections, downsample_factor=5):
-    # Downsample the data
-    raw_time_ds = downsample(raw_time, downsample_factor)
-    raw_data_ds = downsample(raw_data, downsample_factor)
-    processed_time_ds = downsample(processed_time, downsample_factor)
-    processed_data_ds = downsample(processed_data, downsample_factor)
+    # Validate and downsample data
+    raw_data = validate_data(raw_data)
+    processed_data = validate_data(processed_data)
+    
+    raw_data_ds = adaptive_downsample(raw_data)
+    processed_data_ds = adaptive_downsample(processed_data)
+    raw_time_ds = raw_time[:len(raw_data_ds)]
+    processed_time_ds = processed_time[:len(processed_data_ds)]
     
     fig = go.Figure()
     
     fig.add_trace(go.Scatter(x=raw_time_ds, y=raw_data_ds, mode='lines', name='Raw Data'))
     fig.add_trace(go.Scatter(x=processed_time_ds, y=processed_data_ds, mode='lines', name='Processed Data'))
+    
     
     # Color mapping for event types
     color_map = {
@@ -120,45 +137,64 @@ def create_interactive_seismic_plot(raw_time, raw_data, processed_time, processe
   
     return fig
 
-def create_3d_seismic_trace(data, sampling_rate, detections, num_traces=50, downsample_factor=10):
+
+
+def create_3d_seismic_trace(data, sampling_rate, detections, downsample_factor=10):
     # Downsample the data
-    downsampled_data = downsample(data, downsample_factor)
+    downsampled_data = data[::downsample_factor]
     time = np.arange(len(downsampled_data)) * downsample_factor / sampling_rate
-    
-    traces = np.arange(num_traces)
     
     # Calculate frequency content (on downsampled data)
     f, t, Sxx = signal.spectrogram(downsampled_data, fs=sampling_rate/downsample_factor, nperseg=256, noverlap=128)
-    dominant_freq = f[np.argmax(Sxx, axis=0)]
-    norm_freq = (dominant_freq - dominant_freq.min()) / (dominant_freq.max() - dominant_freq.min())
+    
+    # Normalize the spectrogram
+    Sxx_norm = (Sxx - np.min(Sxx)) / (np.max(Sxx) - np.min(Sxx))
     
     fig = go.Figure()
     
     # Add spectrogram as a surface at the bottom of the 3D plot
     spectrogram_z = np.log10(Sxx + 1e-10)  # Add small value to avoid log(0)
     fig.add_trace(go.Surface(
-        x=t,
-        y=f,
-        z=spectrogram_z,
+        x=t, y=f, z=spectrogram_z,
         colorscale='Viridis',
-        showscale=False,
+        showscale=True,
+        colorbar=dict(title="Spectrogram Power (dB)", x=1.1, y=0.15, len=0.3),
         opacity=0.8
     ))
     
-    for i in range(num_traces):
-        start = i * len(downsampled_data) // num_traces
-        end = (i + 1) * len(downsampled_data) // num_traces
-        
-        colors = plt.cm.viridis(norm_freq[start:end])
-        
-        fig.add_trace(go.Scatter3d(
-            x=time[start:end],
-            y=np.full_like(time[start:end], i),
-            z=downsampled_data[start:end] + i*0.1,  # Add offset for better visibility
-            mode='lines',
-            line=dict(color=colors, width=2),
-            opacity=0.6
-        ))
+    # Calculate z-score of the data for better visualization
+    z_scored_data = zscore(downsampled_data)
+    
+    # Create a custom colorscale for amplitude
+    colorscale = [
+        [0, "blue"],
+        [0.25, "cyan"],
+        [0.5, "yellow"],
+        [0.75, "orange"],
+        [1, "red"]
+    ]
+    
+    # Add 3D scatter plot for seismic trace
+    fig.add_trace(go.Scatter3d(
+        x=time, y=np.zeros_like(time), z=z_scored_data,
+        mode='lines',
+        line=dict(color=z_scored_data, colorscale='RdBu', width=5),
+        name='Seismic Trace'
+    ))
+    
+    # Add a separate trace for the colorbar
+    fig.add_trace(go.Scatter3d(
+        x=[None], y=[None], z=[None],
+        mode='markers',
+        marker=dict(
+            colorscale='RdBu',
+            showscale=True,
+            cmin=np.min(z_scored_data),
+            cmax=np.max(z_scored_data),
+            colorbar=dict(title="Amplitude (Z-score)", x=1.1, y=0.5, len=0.3)
+        ),
+        hoverinfo='none'
+    ))
     
     # Color mapping for event types
     color_map = {
@@ -168,36 +204,67 @@ def create_3d_seismic_trace(data, sampling_rate, detections, num_traces=50, down
         "Micro Event": "green"
     }
     
-    # Add markers for detected events (adjust indices for downsampled data)
+    # Add markers for detected events
     for event in detections:
-        start, end = event['start'], event['end']
+        start, end = event['start'] // downsample_factor, event['end'] // downsample_factor
         event_type = event['type']
         energy_ratio = event['energy_ratio']
         max_cft = event['max_cft']
         
+        # Calculate mean frequency and amplitude for the event
+        event_freq = np.mean(f[np.argmax(Sxx_norm[:, start:end], axis=0)])
+        event_amp = np.mean(z_scored_data[start:end])
+        
         fig.add_trace(go.Scatter3d(
-            x=[time[start//downsample_factor], time[end//downsample_factor]],
-            y=[num_traces/2, num_traces/2],
-            z=[downsampled_data[start//downsample_factor] + num_traces*0.05, 
-               downsampled_data[end//downsample_factor] + num_traces*0.05],
+            x=[time[start], time[end]],
+            y=[event_freq, event_freq],
+            z=[event_amp, event_amp],
             mode='markers',
-            marker=dict(size=5, color=color_map[event_type], symbol='diamond'),
+            marker=dict(size=12, color=color_map[event_type], symbol='diamond', line=dict(color='black', width=2)),
             name=f'{event_type} (ER: {energy_ratio:.2f}, CFT: {max_cft:.2f})'
         ))
     
+    # Update layout
     fig.update_layout(
-        title='3D Seismic Trace Visualization with Multi-scale Event Detection',
+        title=dict(
+            text='Enhanced 3D Seismic Trace Visualization with Multi-scale Event Detection',
+            font=dict(size=24)
+        ),
         scene=dict(
-            xaxis_title='Time [s]',
-            yaxis_title='Frequency [Hz]',
-            zaxis_title='Amplitude / Log Power',
+            xaxis_title=dict(text='Time (s)', font=dict(size=16)),
+            yaxis_title=dict(text='Frequency (Hz)', font=dict(size=16)),
+            zaxis_title=dict(text='Amplitude (Z-score)', font=dict(size=16)),
             aspectmode='manual',
             aspectratio=dict(x=2, y=1, z=0.5),
             camera=dict(eye=dict(x=1.5, y=-1.5, z=0.5))
         ),
-        height=700
+        height=800,
+        margin=dict(r=20, l=10, b=10, t=40),
+        legend=dict(
+            font=dict(size=14),
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01,
+            bgcolor="rgba(255, 255, 255, 0.7)"
+        )
     )
-    
+
+    # Add clearer annotations
+    annotations = [
+        dict(x=0.02, y=1, text="Seismic Trace: 3D line shows amplitude over time", font=dict(size=14)),
+        dict(x=0.02, y=0.96, text="Bottom Surface: Spectrogram (frequency content over time)", font=dict(size=14)),
+        dict(x=0.02, y=0.92, text="Diamond Markers: Detected events (time, frequency, and type)", font=dict(size=14))
+    ]
+    for annot in annotations:
+        fig.add_annotation(
+            xref="paper", yref="paper",
+            showarrow=False,
+            bgcolor="white",
+            opacity=0.8,
+            **annot
+        )
+
     return fig
 def create_comprehensive_plot(raw_data, processed_data, raw_time, processed_time, sampling_rate, classified_events, file_name):
     # Define color scheme for event types

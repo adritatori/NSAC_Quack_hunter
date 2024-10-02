@@ -12,16 +12,22 @@ from io import BytesIO
 import plotly.graph_objects as go
 from data_processing import combined_ste_rms_reduction
 from event_detection import multi_scale_event_detection
-from visualization import create_3d_seismic_trace, create_audio_file, create_comprehensive_plot, create_interactive_seismic_plot
+from visualization import create_3d_seismic_trace, create_audio_file, create_comprehensive_plot, create_interactive_seismic_plot, validate_data
 from utils import check_empty_data
 import librosa
 import soundfile as sf
 
 def calculate_snr(data, sampling_rate):
-    freqs, psd = signal.welch(data, sampling_rate)
-    signal_power = np.sum(psd)
-    noise_power = signal_power - np.max(psd)
-    snr = 10 * np.log10(signal_power / noise_power) if noise_power > 0 else float('inf')
+    if len(data) == 0:
+        return float('-inf')
+
+    signal_power = np.mean(data**2)
+    noise_power = np.var(data)
+
+    if noise_power == 0:
+        return float('inf')
+
+    snr = 10 * np.log10(signal_power / noise_power)
     return snr
 
 def display_audio(audio_buffer, label):
@@ -39,7 +45,7 @@ def display_audio(audio_buffer, label):
 def main():
     st.set_page_config(page_title="Quack Hunter", page_icon="🌋", layout="wide")
     
-    # Custom CSS
+    # Custom CSS (unchanged)
     st.markdown("""
     <style>
     .stApp {
@@ -58,7 +64,7 @@ def main():
 
     st.title("🌋 Quack Finder")
 
-    # Sidebar for processing parameters
+    # Sidebar for processing parameters (unchanged)
     with st.sidebar:
         st.header("Processing Parameters")
         ste_frame_size = st.slider("STE Frame Size", 100, 2000, 1000)
@@ -87,6 +93,11 @@ def main():
                 raw_data = st_obj[0].data
                 sampling_rate = st_obj[0].stats.sampling_rate
                 raw_time = np.arange(len(raw_data)) / sampling_rate
+                raw_data = 2 * (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data)) - 1
+                raw_time = np.arange(len(raw_data)) / sampling_rate
+                #adjustment = len(raw_data) % ste_hop_size    
+                # Validate data
+                raw_data = validate_data(raw_data)
 
                 # Display file metadata
                 with st.expander("File Metadata"):
@@ -107,36 +118,32 @@ def main():
                 snr_before = calculate_snr(raw_data, sampling_rate)
 
                 # Process data
-                final_mask, _, _ = combined_ste_rms_reduction(
-                    raw_data, sampling_rate, ste_frame_size, ste_hop_size, ste_threshold,
-                    rms_window_size, global_rms_threshold, segment_threshold_factor
-                )
-                processed_data = raw_data[final_mask]
-                processed_time = raw_time[final_mask]
+                with st.spinner("Processing data..."):
+                    final_mask, _, _ = combined_ste_rms_reduction(
+                        raw_data, sampling_rate, ste_frame_size, ste_hop_size, ste_threshold,
+                        rms_window_size, global_rms_threshold, segment_threshold_factor
+                    )
+                    processed_data = raw_data[final_mask]
+                    processed_time = raw_time[final_mask]
+
+                # Validate processed data
+                processed_data = validate_data(processed_data)
 
                 # Calculate SNR after processing
                 snr_after = calculate_snr(processed_data, sampling_rate)
 
-                
-                detector_params = []
-                for i in range(num_detectors):
-                    st.sidebar.subheader(f"Detector {i+1}")
-                    sta = st.sidebar.slider(f"STA (seconds) - Detector {i+1}", 0.1, 10.0, 3.0, 0.1)
-                    lta = st.sidebar.slider(f"LTA (seconds) - Detector {i+1}", 10.0, 1000.0, 600.0, 10.0)
-                    thr_on = st.sidebar.slider(f"Trigger On Threshold - Detector {i+1}", 1.0, 5.0, 2.5, 0.1)
-                    thr_off = st.sidebar.slider(f"Trigger Off Threshold - Detector {i+1}", 0.5, 3.0, 1.8, 0.1)
-                    min_dur = st.sidebar.slider(f"Minimum Duration (seconds) - Detector {i+1}", 0.1, 5.0, 0.9, 0.1)
-                    
-                    detector_params.append({
-                        "sta": sta,
-                        "lta": lta,
-                        "thr_on": thr_on,
-                        "thr_off": thr_off,
-                        "min_dur": min_dur
-                    })
-
-                # Update your event detection call
-                detections = multi_scale_event_detection(processed_data, sampling_rate, detector_params)
+                # Event detection
+                with st.spinner("Detecting events..."):
+                    detector_params = []
+                    for i in range(num_detectors):
+                        detector_params.append({
+                            "sta": st.sidebar.slider(f"STA (seconds) - Detector {i+1}", 0.1, 10.0, 3.0, 0.1),
+                            "lta": st.sidebar.slider(f"LTA (seconds) - Detector {i+1}", 10.0, 1000.0, 600.0, 10.0),
+                            "thr_on": st.sidebar.slider(f"Trigger On Threshold - Detector {i+1}", 1.0, 5.0, 2.5, 0.1),
+                            "thr_off": st.sidebar.slider(f"Trigger Off Threshold - Detector {i+1}", 0.5, 3.0, 1.8, 0.1),
+                            "min_dur": st.sidebar.slider(f"Minimum Duration (seconds) - Detector {i+1}", 0.1, 5.0, 0.9, 0.1)
+                        })
+                    detections = multi_scale_event_detection(processed_data, sampling_rate, detector_params)
 
                 # Display analytics
                 st.subheader("📊 Analysis Results")
@@ -150,33 +157,56 @@ def main():
                 with col4:
                     data_reduction = (1 - len(processed_data) / len(raw_data)) * 100
                     st.metric("Data Reduction", f"{data_reduction:.2f}%")
+
                 # Interactive seismic plot
                 st.subheader("Interactive Seismic Plot")
-                fig = create_interactive_seismic_plot(raw_time, raw_data, processed_time, processed_data, detections, downsample_factor=10)
-                st.plotly_chart(fig, use_container_width=True)
+                try:
+                    fig = create_interactive_seismic_plot(raw_time, raw_data, processed_time, processed_data, detections, downsample_factor=10)
+                    st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error creating interactive plot: {str(e)}")
+                    st.warning("The interactive plot could not be created due to data size limitations. Consider further downsampling or using a smaller dataset.")
 
                 # Audio comparison
                 st.subheader("Seismic Audio Comparison")
-                raw_audio = create_audio_file(raw_data, sampling_rate, octave=4)
-                processed_audio = create_audio_file(processed_data, sampling_rate, octave=4)
+                try:
+                    raw_audio = create_audio_file(raw_data, sampling_rate, octave=4)
+                    processed_audio = create_audio_file(processed_data, sampling_rate, octave=4)
 
-                if raw_audio is not None and processed_audio is not None:
-                    st.subheader("Seismic Audio Representation")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        display_audio(raw_audio, "Raw Seismic Data")
-                    with col2:
-                        display_audio(processed_audio, "Processed Seismic Data")
+                    if raw_audio is not None and processed_audio is not None:
+                        st.subheader("Seismic Audio Representation")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.audio(raw_audio, format='audio/wav')
+                            st.download_button("Download Raw Audio", raw_audio, "raw_seismic.wav", "audio/wav")
+                        with col2:
+                            st.audio(processed_audio, format='audio/wav')
+                            st.download_button("Download Processed Audio", processed_audio, "processed_seismic.wav", "audio/wav")
+                    else:
+                        st.warning("Audio files could not be created. The dataset might be too large for audio conversion.")
+                except Exception as e:
+                    st.error(f"Error creating audio files: {str(e)}")
 
                 # Comprehensive plot
                 st.subheader("Comprehensive Seismic Analysis")
-                comp_fig = create_comprehensive_plot(raw_data, processed_data, raw_time, processed_time, sampling_rate, detections, uploaded_file.name)
-                st.pyplot(comp_fig)
+                try:
+                    with st.spinner("Generating comprehensive plot..."):
+                        comp_fig = create_comprehensive_plot(raw_data, processed_data, raw_time, processed_time, sampling_rate, detections, uploaded_file.name)
+                        st.pyplot(comp_fig)
+                except Exception as e:
+                    st.error(f"Error creating comprehensive plot: {str(e)}")
+                    st.warning("The comprehensive plot could not be created. This might be due to memory limitations with large datasets.")
 
                 # 3D seismic trace visualization
+                # 3D seismic trace visualization
                 st.subheader("3D Seismic Trace Visualization")
-                fig_3d = create_3d_seismic_trace(processed_data, sampling_rate, detections, downsample_factor=20)
-                st.plotly_chart(fig_3d, use_container_width=True)
+                try:
+                    with st.spinner("Generating 3D visualization..."):
+                        fig_3d = create_3d_seismic_trace(processed_data, sampling_rate, detections, downsample_factor=20)
+                        st.plotly_chart(fig_3d, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error creating 3D seismic trace: {str(e)}")
+                    st.warning("The 3D seismic trace could not be created. This might be due to memory limitations with large datasets.")
 
                 # Event details
                 if detections:
@@ -186,9 +216,12 @@ def main():
                     event_df['End Time (s)'] = event_df['end'] / sampling_rate
                     event_df['Duration (s)'] = event_df['End Time (s)'] - event_df['Start Time (s)']
                     st.dataframe(event_df[['Start Time (s)', 'End Time (s)', 'Duration (s)', 'type', 'energy_ratio', 'max_cft', 'detector']])
+                else:
+                    st.info("No events were detected in the processed data.")
 
             except Exception as e:
                 st.error(f"Error processing the file: {str(e)}")
+                st.error("Please try uploading a different file or contact support if the issue persists.")
 
             finally:
                 # Clean up the temporary file
